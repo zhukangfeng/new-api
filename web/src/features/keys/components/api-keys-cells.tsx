@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { Check, Copy, Loader2 } from 'lucide-react'
 import { useState, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 
 import { BadgeCell } from '@/components/data-table'
 import { StatusBadge } from '@/components/status-badge'
@@ -34,10 +35,73 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { copyToClipboard } from '@/lib/copy-to-clipboard'
-import { formatQuota } from '@/lib/format'
+import { formatQuota, formatTimestampToMinute } from '@/lib/format'
 
+import { API_KEY_STATUSES } from '../constants'
+import { getQuotaPolicyDisableState } from '../lib/quota-policy-status'
 import type { ApiKey } from '../types'
 import { useApiKeys } from './api-keys-provider'
+
+export function ApiKeyStatusBadge({
+  apiKey,
+  className,
+}: {
+  apiKey: ApiKey
+  className?: string
+}) {
+  const { t } = useTranslation()
+  const statusConfig = API_KEY_STATUSES[apiKey.status]
+  const quotaPolicyDisableState = getQuotaPolicyDisableState(apiKey)
+
+  if (quotaPolicyDisableState) {
+    const policy = apiKey.quota_policy
+    const isRecovering = quotaPolicyDisableState === 'recovering'
+    return (
+      <Tooltip>
+        <TooltipTrigger render={<span className={className} />}>
+          <StatusBadge
+            label={
+              isRecovering ? t('Recovery pending') : t('Temporarily disabled')
+            }
+            variant='warning'
+            copyable={false}
+          />
+        </TooltipTrigger>
+        <TooltipContent side='top' className='max-w-xs'>
+          <div className='space-y-1 text-xs'>
+            <div>{t('Reason: Periodic quota exhausted')}</div>
+            {isRecovering && (
+              <div>{t('Waiting for automatic recovery task.')}</div>
+            )}
+            {policy && (
+              <div>
+                {t('Used:')} {formatQuota(policy.used_quota)} /{' '}
+                {formatQuota(policy.quota)}
+              </div>
+            )}
+            <div>
+              {t('Estimated recovery:')}{' '}
+              {t('About {{time}}', {
+                time: formatTimestampToMinute(policy?.next_reset_at),
+              })}
+            </div>
+          </div>
+        </TooltipContent>
+      </Tooltip>
+    )
+  }
+
+  if (!statusConfig) return null
+
+  return (
+    <StatusBadge
+      label={t(statusConfig.label)}
+      variant={statusConfig.variant}
+      copyable={false}
+      className={className}
+    />
+  )
+}
 
 export function ApiKeyCell({ apiKey }: { apiKey: ApiKey }) {
   const { t } = useTranslation()
@@ -54,6 +118,15 @@ export function ApiKeyCell({ apiKey }: { apiKey: ApiKey }) {
   const resolvedFullKey = resolvedKeys[apiKey.id]
   const isCopied = copiedKeyId === apiKey.id
   const maskedKey = `sk-${apiKey.key}`
+  let copyIcon = <Copy className='size-3.5' />
+  let copyTooltip = t('Copy API key')
+  if (isLoading) {
+    copyIcon = <Loader2 className='size-3.5 animate-spin' />
+    copyTooltip = t('Loading...')
+  } else if (isCopied) {
+    copyIcon = <Check className='size-3.5 text-green-600' />
+    copyTooltip = t('Copied!')
+  }
 
   const handlePopoverOpen = useCallback(
     (open: boolean) => {
@@ -66,22 +139,17 @@ export function ApiKeyCell({ apiKey }: { apiKey: ApiKey }) {
   )
 
   const handleCopy = useCallback(async () => {
-    const realKey = resolvedFullKey || (await resolveRealKey(apiKey.id))
-    if (!realKey) return
-
-    const ok = await copyToClipboard(realKey)
-    if (ok) markKeyCopied(apiKey.id)
-  }, [resolvedFullKey, resolveRealKey, apiKey.id, markKeyCopied])
-
-  let copyIcon = <Copy className='size-3.5' />
-  let copyTooltip = t('Copy API key')
-  if (isLoading) {
-    copyIcon = <Loader2 className='size-3.5 animate-spin' />
-    copyTooltip = t('Loading...')
-  } else if (isCopied) {
-    copyIcon = <Check className='size-3.5 text-green-600' />
-    copyTooltip = t('Copied!')
-  }
+    const realKey = resolvedFullKey
+    if (!realKey) {
+      void resolveRealKey(apiKey.id)
+      toast.info(t('API key is loading, please try again in a moment'))
+      return
+    }
+    if (realKey) {
+      const ok = await copyToClipboard(realKey)
+      if (ok) markKeyCopied(apiKey.id)
+    }
+  }, [resolvedFullKey, resolveRealKey, apiKey.id, markKeyCopied, t])
 
   return (
     <div className='flex max-w-full min-w-0 items-center'>
@@ -130,6 +198,12 @@ export function ApiKeyCell({ apiKey }: { apiKey: ApiKey }) {
               size='icon'
               className='size-7 shrink-0'
               onClick={handleCopy}
+              onFocus={() => {
+                if (!resolvedFullKey) void resolveRealKey(apiKey.id)
+              }}
+              onPointerEnter={() => {
+                if (!resolvedFullKey) void resolveRealKey(apiKey.id)
+              }}
               disabled={isLoading}
             />
           }
@@ -139,40 +213,6 @@ export function ApiKeyCell({ apiKey }: { apiKey: ApiKey }) {
         <TooltipContent>{copyTooltip}</TooltipContent>
       </Tooltip>
     </div>
-  )
-}
-
-type UnlimitedQuotaBadgeProps = {
-  used: number
-}
-
-export function UnlimitedQuotaBadge(props: UnlimitedQuotaBadgeProps) {
-  const { t } = useTranslation()
-  const formattedUsed = formatQuota(props.used)
-
-  return (
-    <Popover>
-      <PopoverTrigger
-        render={
-          <button
-            type='button'
-            className='focus-visible:ring-ring/50 -ml-1.5 cursor-help rounded-4xl focus-visible:ring-[3px] focus-visible:outline-none'
-            aria-label={`${t('Unlimited')}; ${t('Used:')} ${formattedUsed}`}
-          />
-        }
-      >
-        <StatusBadge
-          label={t('Unlimited')}
-          variant='neutral'
-          copyable={false}
-        />
-      </PopoverTrigger>
-      <PopoverContent className='w-auto p-2' side='top'>
-        <span className='text-xs'>
-          {t('Used:')} {formattedUsed}
-        </span>
-      </PopoverContent>
-    </Popover>
   )
 }
 

@@ -175,6 +175,17 @@ export function formatTimestampToDate(
   return dayjs(ms).format('YYYY-MM-DD HH:mm:ss')
 }
 
+export function formatTimestampToMinute(
+  timestamp?: number,
+  unit: 'seconds' | 'milliseconds' = 'seconds'
+): string {
+  if (!timestamp || timestamp === -1 || timestamp === 0) {
+    return '-'
+  }
+  const ms = unit === 'seconds' ? timestamp * 1000 : timestamp
+  return dayjs(ms).format('YYYY-MM-DD HH:mm')
+}
+
 /**
  * Format timestamp as relative time, e.g. "30 seconds ago".
  * @param timestamp - Timestamp in seconds or milliseconds

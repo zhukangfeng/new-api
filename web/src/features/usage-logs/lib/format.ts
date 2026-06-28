@@ -23,6 +23,7 @@ import {
   parseTiersFromExpr,
   type ParsedTier,
 } from '@/features/pricing/lib/billing-expr'
+import { formatLogQuota, formatTimestampToDate } from '@/lib/format'
 
 import type { UsageLog } from '../data/schema'
 import type { LogOtherData } from '../types'
@@ -89,67 +90,6 @@ export function isViolationFeeLog(other: LogOtherData | null): boolean {
     other.violation_fee === true ||
     Boolean(other.violation_fee_code) ||
     Boolean(other.violation_fee_marker)
-  )
-}
-
-function isPositiveFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0
-}
-
-function hasLegacySearchSurcharge(
-  enabled: boolean | undefined,
-  count: number | undefined,
-  price: number | undefined
-): boolean {
-  return (
-    enabled === true &&
-    isPositiveFiniteNumber(count) &&
-    isPositiveFiniteNumber(price)
-  )
-}
-
-/**
- * Check whether a consume log includes an actual tool-call surcharge.
- * Structured surcharge items cover current logs, while the legacy fields keep
- * historical Web Search, File Search, and Image Generation logs visible.
- */
-export function hasToolSurcharge(other: LogOtherData | null): boolean {
-  if (!other) return false
-
-  const hasStructuredSurcharge =
-    Array.isArray(other.tool_surcharges) &&
-    other.tool_surcharges.some(
-      (item) =>
-        typeof item?.name === 'string' &&
-        item.name.trim() !== '' &&
-        isPositiveFiniteNumber(item.count) &&
-        isPositiveFiniteNumber(item.price)
-    )
-  if (hasStructuredSurcharge) return true
-
-  if (
-    hasLegacySearchSurcharge(
-      other.web_search,
-      other.web_search_call_count,
-      other.web_search_price
-    )
-  ) {
-    return true
-  }
-
-  if (
-    hasLegacySearchSurcharge(
-      other.file_search,
-      other.file_search_call_count,
-      other.file_search_price
-    )
-  ) {
-    return true
-  }
-
-  return (
-    other.image_generation_call === true &&
-    isPositiveFiniteNumber(other.image_generation_call_price)
   )
 }
 
@@ -275,7 +215,7 @@ export function decodeBillingExprB64(exprB64: string | undefined): string {
 
     return decodeURIComponent(
       Array.prototype.map
-        .call(bytes, (byte: number) => `%${byte.toString(16).padStart(2, '0')}`)
+        .call(bytes, (byte: number) => '%' + byte.toString(16).padStart(2, '0'))
         .join('')
     )
   } catch {
@@ -316,7 +256,7 @@ export interface TieredBillingSummary {
 /**
  * Whether the request payload reports any cache-related token usage. Used to
  * suppress cache pricing rows from the tiered breakdown when the request did
- * not exercise the cache path.
+ * not exercise the cache path (mirrors the classic frontend behaviour).
  */
 export function hasAnyCacheTokens(
   other: LogOtherData | null | undefined
@@ -466,7 +406,6 @@ const AUDIT_TEMPLATES: Record<string, string> = {
   'subscription.bind': 'Bound a subscription',
   // Logs
   'log.clear': 'Cleared historical logs',
-  'log.cleanup_start': 'Log cleanup task started.',
   // Generic middleware fallback
   generic: '{{method}} {{route}}',
 }
@@ -485,4 +424,53 @@ export function renderAuditContent(
   const template = AUDIT_TEMPLATES[op.action]
   if (!template) return null
   return t(template, (op.params ?? {}) as Record<string, unknown>)
+}
+
+const SYSTEM_TEMPLATES: Record<string, string> = {
+  'token.quota_policy.auto_restore_reset':
+    'API key automatically restored after periodic quota reset. New period started at {{newPeriodStart}}, next reset at {{nextResetAt}}.',
+  'token.quota_policy.exhausted_disable':
+    'API key temporarily disabled because periodic quota exhausted. Used {{usedQuota}} of {{quota}}. It will reset at {{nextResetAt}}.',
+  'token.quota_policy.manual_reset':
+    'API key periodic quota manually reset. Current usage was cleared. Next reset at {{nextResetAt}}.',
+  'token.quota_policy.update_disable':
+    'API key temporarily disabled because the updated periodic quota is already exhausted. Used {{usedQuota}} of {{quota}}. It will reset at {{nextResetAt}}.',
+  'token.quota_policy.update_restore':
+    'API key automatically restored after periodic quota update. Used {{usedQuota}} of {{quota}}. Next reset at {{nextResetAt}}.',
+}
+
+function formatSystemLogTimestamp(value: unknown): string {
+  if (value == null || value === '') return '-'
+  const timestamp = Number(value)
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return String(value)
+  return formatTimestampToDate(timestamp)
+}
+
+function formatSystemLogQuota(value: unknown): string {
+  if (value == null || value === '') return '-'
+  const quota = Number(value)
+  if (!Number.isFinite(quota)) return String(value)
+  return formatLogQuota(quota)
+}
+
+/**
+ * Render localized system log content from the language-independent op
+ * descriptor. Unknown system logs intentionally fall back to raw content.
+ */
+export function renderSystemContent(
+  other: LogOtherData | null | undefined,
+  t: (key: string, opts?: Record<string, unknown>) => string
+): string | null {
+  const op = other?.op
+  if (!op?.action) return null
+  const template = SYSTEM_TEMPLATES[op.action]
+  if (!template) return null
+  const params = op.params ?? {}
+  return t(template, {
+    quota: formatSystemLogQuota(params.quota),
+    usedQuota: formatSystemLogQuota(params.used_quota),
+    nextResetAt: formatSystemLogTimestamp(params.next_reset_at),
+    newPeriodStart: formatSystemLogTimestamp(params.new_period_start),
+    previousStatus: params.previous_status ?? '-',
+  })
 }

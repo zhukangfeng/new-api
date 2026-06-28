@@ -1,3 +1,6 @@
+import { zodResolver } from '@hookform/resolvers/zod'
+import { useQuery } from '@tanstack/react-query'
+import { ChevronDown, KeyRound, Settings2, WalletCards } from 'lucide-react'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -16,11 +19,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { zodResolver } from '@hookform/resolvers/zod'
-import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, KeyRound, Settings2, WalletCards } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
-import { useForm, type SubmitErrorHandler } from 'react-hook-form'
+import { useEffect, useState } from 'react'
+import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -67,16 +67,11 @@ import { getUserModels, getUserGroups } from '@/lib/api'
 import { getCurrencyDisplay, getCurrencyLabel } from '@/lib/currency'
 import { cn } from '@/lib/utils'
 
-import {
-  createApiKey,
-  updateApiKey,
-  getApiKey,
-  getTokenAutoGroups,
-} from '../api'
+import { createApiKey, updateApiKey, getApiKey } from '../api'
 import { ERROR_MESSAGES, SUCCESS_MESSAGES } from '../constants'
 import {
-  getApiKeyFormSchema,
   type ApiKeyFormValues,
+  getApiKeyFormSchema,
   getApiKeyFormDefaultValues,
   transformFormDataToPayload,
   transformApiKeyToFormDefaults,
@@ -87,7 +82,6 @@ import {
   type ApiKeyGroupOption,
 } from './api-key-group-combobox'
 import { useApiKeys } from './api-keys-provider'
-import { AutoGroupOrderEditor } from './auto-group-order-editor'
 
 type ApiKeyMutateDrawerProps = {
   open: boolean
@@ -102,14 +96,10 @@ export function ApiKeysMutateDrawer({
 }: ApiKeyMutateDrawerProps) {
   const { t } = useTranslation()
   const isUpdate = !!currentRow
-  const currentRowId = currentRow?.id
   const { triggerRefresh } = useApiKeys()
-  const { status, loading: statusLoading } = useStatus()
+  const { status } = useStatus()
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
-  const [initializedTarget, setInitializedTarget] = useState<string | null>(
-    null
-  )
   const defaultUseAutoGroup = status?.default_use_auto_group === true
 
   // Fetch models
@@ -121,77 +111,25 @@ export function ApiKeysMutateDrawer({
   })
 
   // Fetch groups
-  const {
-    data: groupsData,
-    isFetched: groupsFetched,
-    isFetching: groupsFetching,
-  } = useQuery({
+  const { data: groupsData } = useQuery({
     queryKey: ['user-groups'],
     queryFn: getUserGroups,
     enabled: open,
     staleTime: 0,
   })
 
-  const {
-    data: apiKeyData,
-    isFetched: apiKeyFetched,
-    isFetching: apiKeyFetching,
-  } = useQuery({
-    queryKey: ['api-key', currentRowId],
-    queryFn: () => getApiKey(currentRowId ?? 0),
-    enabled: open && isUpdate && currentRowId !== undefined,
-    staleTime: 0,
-  })
-
-  const {
-    data: autoGroupsData,
-    isFetched: autoGroupsFetched,
-    isFetching: autoGroupsFetching,
-  } = useQuery({
-    queryKey: ['token-auto-groups'],
-    queryFn: getTokenAutoGroups,
-    enabled: open,
-    staleTime: 0,
-  })
-
   const models = modelsData?.data || []
-  const groups = useMemo<ApiKeyGroupOption[]>(
-    () =>
-      Object.entries(groupsData?.data || {}).map(([key, info]) => ({
-        value: key,
-        label: key,
-        desc: info.desc || key,
-        ratio: info.ratio,
-      })),
-    [groupsData]
+  const groupsRaw = groupsData?.data || {}
+  const groups: ApiKeyGroupOption[] = Object.entries(groupsRaw).map(
+    ([key, info]) => ({
+      value: key,
+      label: key,
+      desc: info.desc || key,
+      ratio: info.ratio,
+    })
   )
   const backendHasAuto = groups.some((g) => g.value === 'auto')
-  const availableAutoGroupNames = useMemo(
-    () => groups.filter((group) => group.value !== 'auto').map((g) => g.value),
-    [groups]
-  )
-  const globalAutoGroups = useMemo(() => {
-    const available = new Set(availableAutoGroupNames)
-    return (autoGroupsData?.data?.groups || []).filter((group) =>
-      available.has(group)
-    )
-  }, [autoGroupsData, availableAutoGroupNames])
-  const globalAutoGroupOptions = useMemo(() => {
-    const groupsByValue = new Map(groups.map((group) => [group.value, group]))
-    return globalAutoGroups.flatMap((group) => {
-      const option = groupsByValue.get(group)
-      return option ? [option] : []
-    })
-  }, [globalAutoGroups, groups])
-  const maxAutoGroups =
-    Number.isInteger(autoGroupsData?.data?.max_count) &&
-    Number(autoGroupsData?.data?.max_count) > 0
-      ? Number(autoGroupsData?.data?.max_count)
-      : 5
-  const schema = useMemo(
-    () => getApiKeyFormSchema(t, maxAutoGroups),
-    [t, maxAutoGroups]
-  )
+  const schema = getApiKeyFormSchema(t)
 
   const form = useForm<ApiKeyFormValues>({
     resolver: zodResolver(schema),
@@ -200,69 +138,27 @@ export function ApiKeysMutateDrawer({
 
   // Load existing data when updating
   useEffect(() => {
-    if (!open) {
-      setInitializedTarget(null)
-      return
-    }
-    if (
-      !groupsFetched ||
-      groupsFetching ||
-      !autoGroupsFetched ||
-      autoGroupsFetching
-    ) {
-      return
-    }
-    if (isUpdate && (!apiKeyFetched || apiKeyFetching)) return
-    if (!isUpdate && statusLoading) return
-
-    const target = isUpdate && currentRow ? `update:${currentRow.id}` : 'create'
-    if (initializedTarget === target) return
-    if (isUpdate && currentRow) {
-      if (apiKeyData?.success && apiKeyData.data) {
-        form.reset(
-          transformApiKeyToFormDefaults(
-            apiKeyData.data,
-            availableAutoGroupNames,
-            maxAutoGroups
-          )
-        )
-        setInitializedTarget(target)
-      }
-    } else {
+    if (open && isUpdate && currentRow) {
+      getApiKey(currentRow.id)
+        .then((result) => {
+          if (result.success && result.data) {
+            form.reset(transformApiKeyToFormDefaults(result.data))
+          }
+        })
+        .catch(() => {
+          toast.error(t(ERROR_MESSAGES.LOAD_FAILED))
+        })
+    } else if (open && !isUpdate) {
       form.reset(
         getApiKeyFormDefaultValues(defaultUseAutoGroup && backendHasAuto)
       )
-      setInitializedTarget(target)
     }
-  }, [
-    open,
-    isUpdate,
-    currentRow,
-    form,
-    defaultUseAutoGroup,
-    statusLoading,
-    backendHasAuto,
-    groupsFetched,
-    groupsFetching,
-    autoGroupsFetched,
-    autoGroupsFetching,
-    apiKeyData,
-    apiKeyFetched,
-    apiKeyFetching,
-    availableAutoGroupNames,
-    maxAutoGroups,
-    initializedTarget,
-  ])
-
-  const formTarget =
-    isUpdate && currentRow ? `update:${currentRow.id}` : 'create'
-  const isFormInitialized = initializedTarget === formTarget
-  const selectedGroup = form.watch('group')
+  }, [open, isUpdate, currentRow, form, defaultUseAutoGroup, backendHasAuto, t])
 
   // Correct group after groups load: if the form value is not in available groups, fall back
   useEffect(() => {
     if (groups.length === 0) return
-    const currentGroup = selectedGroup
+    const currentGroup = form.getValues('group')
     if (currentGroup && !groups.some((g) => g.value === currentGroup)) {
       const fallback =
         groups.find((g) => g.value === 'default')?.value ??
@@ -270,12 +166,10 @@ export function ApiKeysMutateDrawer({
         ''
       form.setValue('group', fallback)
       if (currentGroup === 'auto') {
-        form.setValue('auto_groups', [])
-        form.setValue('auto_groups_mode', 'inherit')
         form.setValue('cross_group_retry', false)
       }
     }
-  }, [groups, form, selectedGroup])
+  }, [groups, form])
 
   const onSubmit = async (data: ApiKeyFormValues) => {
     setIsSubmitting(true)
@@ -332,7 +226,7 @@ export function ApiKeysMutateDrawer({
     }
   }
 
-  const onInvalid: SubmitErrorHandler<ApiKeyFormValues> = () => {
+  const onInvalid = () => {
     toast.error(t('Please fix the highlighted fields before saving'))
   }
 
@@ -357,8 +251,10 @@ export function ApiKeysMutateDrawer({
   const quotaPlaceholder = tokensOnly
     ? t('Enter quota in tokens')
     : t('Enter quota in {{currency}}', { currency: currencyLabel })
-  const autoGroupsMode = form.watch('auto_groups_mode')
+  const selectedGroup = form.watch('group')
   const unlimitedQuota = form.watch('unlimited_quota')
+  const periodicQuotaEnabled = form.watch('quota_policy_enabled')
+  const periodicQuotaPeriodMode = form.watch('quota_policy_period_mode')
 
   return (
     <Sheet
@@ -387,8 +283,6 @@ export function ApiKeysMutateDrawer({
           <form
             id='api-key-form'
             onSubmit={form.handleSubmit(onSubmit, onInvalid)}
-            aria-busy={!isFormInitialized}
-            inert={!isFormInitialized || isSubmitting ? true : undefined}
             className={sideDrawerFormClassName('gap-5')}
           >
             <SideDrawerSection>
@@ -396,7 +290,6 @@ export function ApiKeysMutateDrawer({
                 title={t('Basic Information')}
                 description={t('Set API key basic information')}
                 icon={<KeyRound className='size-4' />}
-                iconTone='info'
               />
               <FormField
                 control={form.control}
@@ -422,18 +315,7 @@ export function ApiKeysMutateDrawer({
                       <ApiKeyGroupCombobox
                         options={groups}
                         value={field.value}
-                        onValueChange={(group) => {
-                          field.onChange(group)
-                          if (group === 'auto') {
-                            form.setValue('cross_group_retry', true, {
-                              shouldDirty: true,
-                            })
-                            return
-                          }
-                          form.setValue('cross_group_retry', false, {
-                            shouldDirty: true,
-                          })
-                        }}
+                        onValueChange={field.onChange}
                         placeholder={t('Select a group')}
                       />
                     </FormControl>
@@ -441,47 +323,6 @@ export function ApiKeysMutateDrawer({
                   </FormItem>
                 )}
               />
-
-              {selectedGroup === 'auto' && (
-                <FormField
-                  control={form.control}
-                  name='auto_groups'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>{t('Auto group order')}</FormLabel>
-                      <FormDescription>
-                        {t(
-                          'Choose and order the groups this API key will try.'
-                        )}
-                      </FormDescription>
-                      <FormControl>
-                        <AutoGroupOrderEditor
-                          value={field.value}
-                          mode={autoGroupsMode}
-                          options={groups}
-                          globalOptions={globalAutoGroupOptions}
-                          maxCount={maxAutoGroups}
-                          onChange={(value) => {
-                            form.setValue('auto_groups_mode', value.mode, {
-                              shouldDirty: true,
-                              shouldValidate: false,
-                            })
-                            form.setValue(
-                              'auto_groups',
-                              value.groups.slice(0, maxAutoGroups),
-                              {
-                                shouldDirty: true,
-                                shouldValidate: true,
-                              }
-                            )
-                          }}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              )}
 
               {selectedGroup === 'auto' && (
                 <FormField
@@ -606,7 +447,6 @@ export function ApiKeysMutateDrawer({
                 title={t('Quota Settings')}
                 description={t('Set quota amount and limits')}
                 icon={<WalletCards className='size-4' />}
-                iconTone='success'
               />
               {!unlimitedQuota && (
                 <FormField
@@ -663,6 +503,223 @@ export function ApiKeysMutateDrawer({
                   </FormItem>
                 )}
               />
+            </SideDrawerSection>
+
+            <SideDrawerSection>
+              <SideDrawerSectionHeader
+                title={t('Periodic Quota')}
+                description={t('Limit this API key within a recurring window')}
+                icon={<WalletCards className='size-4' />}
+              />
+              <FormField
+                control={form.control}
+                name='quota_policy_enabled'
+                render={({ field }) => (
+                  <FormItem className={sideDrawerSwitchItemClassName()}>
+                    <div className='flex flex-col gap-0.5'>
+                      <FormLabel className='text-sm'>
+                        {t('Enable periodic quota')}
+                      </FormLabel>
+                      <FormDescription className='text-xs'>
+                        {t(
+                          'Applies an extra recurring budget without changing the total API key quota'
+                        )}
+                      </FormDescription>
+                    </div>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+
+              {periodicQuotaEnabled && (
+                <div className='grid gap-4 sm:grid-cols-2'>
+                  <FormField
+                    control={form.control}
+                    name='quota_policy_period_mode'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Period')}</FormLabel>
+                        <FormControl>
+                          <select
+                            value={field.value}
+                            onChange={field.onChange}
+                            className='border-input bg-background ring-offset-background focus-visible:ring-ring h-9 w-full rounded-md border px-3 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none'
+                          >
+                            <option value='preset_5h'>
+                              {t('Every 5 hours')}
+                            </option>
+                            <option value='daily'>{t('Daily')}</option>
+                            <option value='weekly'>{t('Weekly')}</option>
+                            <option value='monthly'>{t('Monthly')}</option>
+                            <option value='custom'>{t('Custom')}</option>
+                          </select>
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  {periodicQuotaPeriodMode === 'custom' && (
+                    <FormField
+                      control={form.control}
+                      name='quota_policy_custom_minutes'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>{t('Custom minutes')}</FormLabel>
+                          <FormControl>
+                            <Input
+                              {...field}
+                              type='number'
+                              min={10}
+                              max={525600}
+                              onChange={(e) =>
+                                field.onChange(
+                                  Number.parseInt(e.target.value, 10) || 10
+                                )
+                              }
+                            />
+                          </FormControl>
+                          <FormDescription>
+                            {t('Minimum 10 minutes, maximum 365 days')}
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  )}
+
+                  <FormField
+                    control={form.control}
+                    name='quota_policy_quota_dollars'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>
+                          {t('Periodic quota ({{currency}})', {
+                            currency: currencyLabel,
+                          })}
+                        </FormLabel>
+                        <FormControl>
+                          <Input
+                            {...field}
+                            type='number'
+                            step={tokensOnly ? 1 : 0.01}
+                            onChange={(e) =>
+                              field.onChange(
+                                Number.parseFloat(e.target.value) || 0
+                              )
+                            }
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name='quota_policy_anchor_time'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Period start time')}</FormLabel>
+                        <FormControl>
+                          <DateTimePicker
+                            value={field.value}
+                            onChange={field.onChange}
+                            placeholder={t('Select start time')}
+                            className='min-w-0 [&_input[type=time]]:w-24 sm:[&_input[type=time]]:w-32'
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name='quota_policy_exhausted_action'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('When quota is exhausted')}</FormLabel>
+                        <FormControl>
+                          <select
+                            value={field.value}
+                            onChange={field.onChange}
+                            className='border-input bg-background ring-offset-background focus-visible:ring-ring h-9 w-full rounded-md border px-3 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none'
+                          >
+                            <option value='reject_only'>
+                              {t('Reject requests only')}
+                            </option>
+                            <option value='disable_token'>
+                              {t('Pause API key')}
+                            </option>
+                          </select>
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name='quota_policy_boundary_mode'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Boundary handling')}</FormLabel>
+                        <FormControl>
+                          <select
+                            value={field.value}
+                            onChange={field.onChange}
+                            className='border-input bg-background ring-offset-background focus-visible:ring-ring h-9 w-full rounded-md border px-3 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none'
+                          >
+                            <option value='graceful_boundary'>
+                              {t('Allow boundary request to finish')}
+                            </option>
+                            <option value='strict_pre_check'>
+                              {t('Strict pre-check')}
+                            </option>
+                          </select>
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'Default allows an in-flight streaming request to finish, then blocks later requests'
+                          )}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name='quota_policy_auto_resume'
+                    render={({ field }) => (
+                      <FormItem className={sideDrawerSwitchItemClassName()}>
+                        <div className='flex flex-col gap-0.5'>
+                          <FormLabel className='text-sm'>
+                            {t('Auto resume next period')}
+                          </FormLabel>
+                          <FormDescription className='text-xs'>
+                            {t(
+                              'Only resumes keys paused by this periodic quota'
+                            )}
+                          </FormDescription>
+                        </div>
+                        <FormControl>
+                          <Switch
+                            checked={field.value}
+                            onCheckedChange={field.onChange}
+                          />
+                        </FormControl>
+                      </FormItem>
+                    )}
+                  />
+                </div>
+              )}
             </SideDrawerSection>
 
             <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
@@ -759,7 +816,7 @@ export function ApiKeysMutateDrawer({
           <Button
             type='button'
             onClick={form.handleSubmit(onSubmit, onInvalid)}
-            disabled={!isFormInitialized || isSubmitting}
+            disabled={isSubmitting}
             className='w-full sm:w-auto'
           >
             {isSubmitting ? t('Saving...') : t('Save changes')}

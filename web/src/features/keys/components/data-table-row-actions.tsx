@@ -1,3 +1,16 @@
+import type { Row } from '@tanstack/react-table'
+import {
+  Trash2,
+  Edit,
+  Power,
+  PowerOff,
+  ExternalLink,
+  ArrowRightLeft,
+  Copy,
+  Link,
+  Loader2,
+  RotateCcw,
+} from 'lucide-react'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -16,22 +29,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import type { Row } from '@tanstack/react-table'
-import {
-  Trash2,
-  Edit,
-  Power,
-  PowerOff,
-  ExternalLink,
-  ArrowRightLeft,
-  Copy,
-  Link,
-  Loader2,
-} from 'lucide-react'
 import { useCallback, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import { DataTableRowActionMenu } from '@/components/data-table/core/row-action-menu'
 import { Button } from '@/components/ui/button'
 import {
@@ -50,11 +52,11 @@ import {
 import { useChatPresets } from '@/features/chat/hooks/use-chat-presets'
 import { resolveChatUrl, type ChatPreset } from '@/features/chat/lib/chat-links'
 import { sendToFluent } from '@/features/chat/lib/send-to-fluent'
-import { encodeChannelConnectionInfo } from '@/lib/channel-connection-info'
 import { copyToClipboard } from '@/lib/copy-to-clipboard'
 
-import { updateApiKeyStatus } from '../api'
+import { resetApiKeyQuotaPolicy, updateApiKeyStatus } from '../api'
 import { API_KEY_STATUS, ERROR_MESSAGES, SUCCESS_MESSAGES } from '../constants'
+import { isTemporarilyDisabledByQuota } from '../lib/quota-policy-status'
 import { apiKeySchema } from '../types'
 import { useApiKeys } from './api-keys-provider'
 
@@ -69,6 +71,14 @@ function getServerAddress(): string {
     /* empty */
   }
   return window.location.origin
+}
+
+function encodeConnectionString(key: string, url: string): string {
+  return JSON.stringify({
+    _type: 'newapi_channel_conn',
+    key,
+    url,
+  })
 }
 
 type DataTableRowActionsProps<TData> = {
@@ -92,8 +102,12 @@ export function DataTableRowActions<TData>({
   const isEnabled = apiKey.status === API_KEY_STATUS.ENABLED
   const { chatPresets, serverAddress } = useChatPresets()
   const [isTogglingStatus, setIsTogglingStatus] = useState(false)
+  const [isResettingQuotaPolicy, setIsResettingQuotaPolicy] = useState(false)
+  const [resetQuotaPolicyConfirmOpen, setResetQuotaPolicyConfirmOpen] =
+    useState(false)
   const resolvedRealKey = resolvedKeys[apiKey.id]
   const isRealKeyLoading = Boolean(loadingKeys[apiKey.id])
+  const isTemporaryQuotaDisabled = isTemporarilyDisabledByQuota(apiKey)
 
   const hasChatPresets = chatPresets.length > 0
   const toggleLabel = isEnabled ? t('Disable') : t('Enable')
@@ -182,6 +196,27 @@ export function DataTableRowActions<TData>({
     }
   }
 
+  const handleResetQuotaPolicy = async (
+    e?: React.MouseEvent<HTMLButtonElement>
+  ) => {
+    e?.stopPropagation()
+    setIsResettingQuotaPolicy(true)
+    try {
+      const result = await resetApiKeyQuotaPolicy(apiKey.id)
+      if (result.success) {
+        toast.success(t('Periodic quota reset and API key restored'))
+        setResetQuotaPolicyConfirmOpen(false)
+        triggerRefresh()
+      } else {
+        toast.error(result.message || t(ERROR_MESSAGES.UNEXPECTED))
+      }
+    } catch {
+      toast.error(t(ERROR_MESSAGES.UNEXPECTED))
+    } finally {
+      setIsResettingQuotaPolicy(false)
+    }
+  }
+
   let statusIcon = <Power className='size-4' />
   if (isTogglingStatus) {
     statusIcon = <Loader2 className='size-4 animate-spin' />
@@ -191,6 +226,49 @@ export function DataTableRowActions<TData>({
 
   return (
     <div className='-ml-1.5 flex items-center gap-1'>
+      {isTemporaryQuotaDisabled && (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                variant='ghost'
+                size='icon-sm'
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setResetQuotaPolicyConfirmOpen(true)
+                }}
+                disabled={isResettingQuotaPolicy}
+                aria-label={t('Reset periodic quota and restore')}
+                className='text-warning hover:text-warning'
+              />
+            }
+          >
+            {isResettingQuotaPolicy ? (
+              <Loader2 className='size-4 animate-spin' />
+            ) : (
+              <RotateCcw className='size-4' />
+            )}
+          </TooltipTrigger>
+          <TooltipContent>
+            {t('Reset periodic quota and restore')}
+          </TooltipContent>
+        </Tooltip>
+      )}
+
+      <ConfirmDialog
+        open={resetQuotaPolicyConfirmOpen}
+        onOpenChange={setResetQuotaPolicyConfirmOpen}
+        title={t('Reset periodic quota and restore?')}
+        desc={t(
+          'This will clear the current period usage and restore this API key immediately.'
+        )}
+        confirmText={t('Reset and restore')}
+        isLoading={isResettingQuotaPolicy}
+        handleConfirm={() => {
+          void handleResetQuotaPolicy()
+        }}
+      />
+
       <Tooltip>
         <TooltipTrigger
           render={
@@ -255,10 +333,7 @@ export function DataTableRowActions<TData>({
           onClick={async () => {
             const realKey = getCachedRealKey()
             if (!realKey) return
-            const connStr = encodeChannelConnectionInfo(
-              realKey,
-              getServerAddress()
-            )
+            const connStr = encodeConnectionString(realKey, getServerAddress())
             const ok = await copyToClipboard(connStr)
             if (ok) toast.success(t('Copied'))
           }}

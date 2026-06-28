@@ -407,6 +407,12 @@ func PreConsumeTokenQuota(relayInfo *relaycommon.RelayInfo, quota int) error {
 		}
 		return fmt.Errorf("token quota is not enough, token remain quota: %s, need quota: %s", logger.FormatQuota(remainQuota), logger.FormatQuota(quota))
 	}
+	if err = preConsumeTokenQuotaPolicy(relayInfo, quota); err != nil {
+		if rollbackErr := model.IncreaseTokenQuota(relayInfo.TokenId, relayInfo.TokenKey, quota); rollbackErr != nil {
+			common.SysLog("error rollback token quota after policy pre-consume failed: " + rollbackErr.Error())
+		}
+		return err
+	}
 	return nil
 }
 
