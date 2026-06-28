@@ -59,6 +59,7 @@ func (s *BillingSession) Settle(actualQuota int) error {
 	if !s.relayInfo.IsPlayground {
 		tokenErr = settleTokenQuotaPolicy(s.relayInfo, actualQuota)
 		if tokenErr != nil {
+			s.fundingSettled = true
 			return tokenErr
 		}
 		if delta != 0 {
