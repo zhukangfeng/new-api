@@ -1,3 +1,4 @@
+import type { TFunction } from 'i18next'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -16,7 +17,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import type { TFunction } from 'i18next'
 import { z } from 'zod'
 
 import { parseQuotaFromDollars, quotaUnitsToDollars } from '@/lib/format'
@@ -28,10 +28,7 @@ import type { ApiKey, ApiKeyFormData } from '../types'
 // Form Schema
 // ============================================================================
 
-export function getApiKeyFormSchema(t: TFunction, maxAutoGroups = 5) {
-  const autoGroupLimit =
-    Number.isInteger(maxAutoGroups) && maxAutoGroups > 0 ? maxAutoGroups : 5
-
+export function getApiKeyFormSchema(t: TFunction) {
   return z
     .object({
       name: z.string().min(1, t('Please enter a name')),
@@ -41,45 +38,27 @@ export function getApiKeyFormSchema(t: TFunction, maxAutoGroups = 5) {
       model_limits: z.array(z.string()),
       allow_ips: z.string().optional(),
       group: z.string().optional(),
-      auto_groups_mode: z.enum(['inherit', 'custom']),
-      auto_groups: z.array(z.string()),
       cross_group_retry: z.boolean().optional(),
       tokenCount: z.number().min(1).optional(),
+      quota_policy_enabled: z.boolean(),
+      quota_policy_period_mode: z.enum([
+        'preset_5h',
+        'daily',
+        'weekly',
+        'monthly',
+        'custom',
+      ]),
+      quota_policy_custom_minutes: z.number().optional(),
+      quota_policy_quota_dollars: z.number().optional(),
+      quota_policy_anchor_time: z.date().optional(),
+      quota_policy_exhausted_action: z.enum(['reject_only', 'disable_token']),
+      quota_policy_boundary_mode: z.enum([
+        'graceful_boundary',
+        'strict_pre_check',
+      ]),
+      quota_policy_auto_resume: z.boolean(),
     })
     .superRefine((data, ctx) => {
-      if (data.group === 'auto') {
-        if (
-          data.auto_groups_mode === 'custom' &&
-          data.auto_groups.length === 0
-        ) {
-          ctx.addIssue({
-            code: 'custom',
-            path: ['auto_groups'],
-            message: t(
-              'Select at least one Auto group or restore global Auto.'
-            ),
-          })
-        }
-
-        if (data.auto_groups.length > autoGroupLimit) {
-          ctx.addIssue({
-            code: 'custom',
-            path: ['auto_groups'],
-            message: t('Select at most {{max}} Auto groups', {
-              max: autoGroupLimit,
-            }),
-          })
-        }
-
-        if (new Set(data.auto_groups).size !== data.auto_groups.length) {
-          ctx.addIssue({
-            code: 'custom',
-            path: ['auto_groups'],
-            message: t('Auto groups must not contain duplicates'),
-          })
-        }
-      }
-
       if (data.unlimited_quota) {
         return
       }
@@ -92,6 +71,33 @@ export function getApiKeyFormSchema(t: TFunction, maxAutoGroups = 5) {
           code: 'custom',
           path: ['remain_quota_dollars'],
           message: t('Quota must be zero or greater'),
+        })
+      }
+
+      if (!data.quota_policy_enabled) {
+        return
+      }
+
+      if (
+        data.quota_policy_quota_dollars === undefined ||
+        data.quota_policy_quota_dollars <= 0
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['quota_policy_quota_dollars'],
+          message: t('Periodic quota must be greater than zero'),
+        })
+      }
+
+      if (
+        data.quota_policy_period_mode === 'custom' &&
+        ((data.quota_policy_custom_minutes ?? 0) < 10 ||
+          (data.quota_policy_custom_minutes ?? 0) > 525600)
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['quota_policy_custom_minutes'],
+          message: t('Custom period must be between 10 minutes and 365 days'),
         })
       }
     })
@@ -111,10 +117,16 @@ export const API_KEY_FORM_DEFAULT_VALUES: ApiKeyFormValues = {
   model_limits: [],
   allow_ips: '',
   group: DEFAULT_GROUP,
-  auto_groups_mode: 'inherit',
-  auto_groups: [],
   cross_group_retry: true,
   tokenCount: 1,
+  quota_policy_enabled: false,
+  quota_policy_period_mode: 'daily',
+  quota_policy_custom_minutes: 30,
+  quota_policy_quota_dollars: 1,
+  quota_policy_anchor_time: new Date(),
+  quota_policy_exhausted_action: 'reject_only',
+  quota_policy_boundary_mode: 'graceful_boundary',
+  quota_policy_auto_resume: true,
 }
 
 export function getApiKeyFormDefaultValues(
@@ -123,8 +135,6 @@ export function getApiKeyFormDefaultValues(
   return {
     ...API_KEY_FORM_DEFAULT_VALUES,
     group: defaultUseAutoGroup ? 'auto' : DEFAULT_GROUP,
-    auto_groups_mode: 'inherit',
-    auto_groups: [],
     cross_group_retry: defaultUseAutoGroup,
   }
 }
@@ -139,7 +149,7 @@ export function getApiKeyFormDefaultValues(
 export function transformFormDataToPayload(
   data: ApiKeyFormValues
 ): ApiKeyFormData {
-  return {
+  const payload: ApiKeyFormData = {
     name: data.name,
     remain_quota: data.unlimited_quota
       ? 0
@@ -152,29 +162,59 @@ export function transformFormDataToPayload(
     model_limits: data.model_limits.join(','),
     allow_ips: data.allow_ips || '',
     group: data.group || '',
-    auto_groups:
-      data.group === 'auto' && data.auto_groups_mode === 'custom'
-        ? data.auto_groups
-        : [],
     cross_group_retry: data.group === 'auto' ? !!data.cross_group_retry : false,
   }
+  if (data.quota_policy_enabled) {
+    payload.quota_policy = {
+      enabled: true,
+      period_mode: data.quota_policy_period_mode,
+      custom_minutes:
+        data.quota_policy_period_mode === 'custom'
+          ? data.quota_policy_custom_minutes || 30
+          : 0,
+      quota: parseQuotaFromDollars(data.quota_policy_quota_dollars || 0),
+      used_quota: 0,
+      anchor_time: data.quota_policy_anchor_time
+        ? Math.floor(data.quota_policy_anchor_time.getTime() / 1000)
+        : Math.floor(Date.now() / 1000),
+      period_start: 0,
+      period_end: 0,
+      next_reset_at: 0,
+      exhausted_action: data.quota_policy_exhausted_action,
+      boundary_mode: data.quota_policy_boundary_mode,
+      auto_resume: data.quota_policy_auto_resume,
+      exhausted_at: 0,
+      exhausted_token_status: 0,
+    }
+  } else if (data.quota_policy_period_mode) {
+    payload.quota_policy = {
+      enabled: false,
+      period_mode: data.quota_policy_period_mode,
+      custom_minutes: data.quota_policy_custom_minutes || 30,
+      quota: 0,
+      used_quota: 0,
+      anchor_time: data.quota_policy_anchor_time
+        ? Math.floor(data.quota_policy_anchor_time.getTime() / 1000)
+        : Math.floor(Date.now() / 1000),
+      period_start: 0,
+      period_end: 0,
+      next_reset_at: 0,
+      exhausted_action: data.quota_policy_exhausted_action,
+      boundary_mode: data.quota_policy_boundary_mode,
+      auto_resume: data.quota_policy_auto_resume,
+      exhausted_at: 0,
+      exhausted_token_status: 0,
+    }
+  }
+  return payload
 }
 
 /**
  * Transform API key data to form defaults
  */
 export function transformApiKeyToFormDefaults(
-  apiKey: ApiKey,
-  availableAutoGroups: string[] = [],
-  maxAutoGroups = 5
+  apiKey: ApiKey
 ): ApiKeyFormValues {
-  const availableSet = new Set(availableAutoGroups)
-  const storedAutoGroups = apiKey.auto_groups ?? []
-  const autoGroups = storedAutoGroups
-    .filter((group) => availableSet.has(group))
-    .slice(0, Math.max(0, maxAutoGroups))
-  const autoGroupsMode = storedAutoGroups.length > 0 ? 'custom' : 'inherit'
-
   return {
     name: apiKey.name,
     remain_quota_dollars: apiKey.unlimited_quota
@@ -190,9 +230,22 @@ export function transformApiKeyToFormDefaults(
       : [],
     allow_ips: apiKey.allow_ips || '',
     group: apiKey.group || DEFAULT_GROUP,
-    auto_groups_mode: autoGroupsMode,
-    auto_groups: autoGroups,
     cross_group_retry: !!apiKey.cross_group_retry,
     tokenCount: 1,
+    quota_policy_enabled: apiKey.quota_policy?.enabled ?? false,
+    quota_policy_period_mode: apiKey.quota_policy?.period_mode ?? 'daily',
+    quota_policy_custom_minutes: apiKey.quota_policy?.custom_minutes ?? 30,
+    quota_policy_quota_dollars: apiKey.quota_policy
+      ? quotaUnitsToDollars(apiKey.quota_policy.quota)
+      : 1,
+    quota_policy_anchor_time:
+      apiKey.quota_policy && apiKey.quota_policy.anchor_time > 0
+        ? new Date(apiKey.quota_policy.anchor_time * 1000)
+        : new Date(),
+    quota_policy_exhausted_action:
+      apiKey.quota_policy?.exhausted_action ?? 'reject_only',
+    quota_policy_boundary_mode:
+      apiKey.quota_policy?.boundary_mode ?? 'graceful_boundary',
+    quota_policy_auto_resume: apiKey.quota_policy?.auto_resume ?? true,
   }
 }

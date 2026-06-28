@@ -20,7 +20,6 @@ import { useQuery } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
 import { flexRender, type Table as TanstackTable } from '@tanstack/react-table'
 import { Database } from 'lucide-react'
-import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -30,7 +29,6 @@ import {
   useDebouncedColumnFilter,
   useDataTable,
 } from '@/components/data-table'
-import { StatusBadge } from '@/components/status-badge'
 import {
   Empty,
   EmptyDescription,
@@ -48,17 +46,10 @@ import { getApiKeys, searchApiKeys } from '../api'
 import {
   API_KEY_STATUS,
   API_KEY_STATUS_OPTIONS,
-  API_KEY_STATUSES,
   ERROR_MESSAGES,
 } from '../constants'
 import type { ApiKey } from '../types'
-import { ApiKeyQuotaCell } from './api-key-quota-cell'
-import { ApiKeyActivityCell } from './api-key-timestamp-cell'
-import {
-  ApiKeyCell,
-  ModelLimitsCell,
-  IpRestrictionsCell,
-} from './api-keys-cells'
+import { ApiKeyCell, ApiKeyStatusBadge } from './api-keys-cells'
 import { useApiKeysColumns } from './api-keys-columns'
 import { useApiKeys } from './api-keys-provider'
 import { DataTableBulkActions } from './data-table-bulk-actions'
@@ -66,10 +57,6 @@ import { DataTableRowActions } from './data-table-row-actions'
 
 const route = getRouteApi('/_authenticated/keys/')
 const API_KEYS_COLUMN_VISIBILITY_STORAGE_KEY = 'api-keys:column-visibility'
-const API_KEYS_MOBILE_SKELETON_IDS = Array.from(
-  { length: 5 },
-  (_, index) => `api-key-mobile-skeleton-${index + 1}`
-)
 
 function isDisabledApiKeyRow(apiKey: ApiKey) {
   return apiKey.status !== API_KEY_STATUS.ENABLED
@@ -77,11 +64,11 @@ function isDisabledApiKeyRow(apiKey: ApiKey) {
 
 function ApiKeysMobileSkeleton() {
   return (
-    <div className='min-w-0 space-y-3'>
-      {API_KEYS_MOBILE_SKELETON_IDS.map((id) => (
+    <div className='divide-border overflow-hidden rounded-lg border'>
+      {['a', 'b', 'c', 'd', 'e'].map((key) => (
         <div
-          key={id}
-          className='border-border/60 bg-card space-y-2 rounded-xl border p-3.5'
+          key={key}
+          className='space-y-2 border-b px-3 py-2.5 last:border-b-0'
         >
           <div className='flex items-center justify-between'>
             <Skeleton className='h-4 w-32' />
@@ -136,13 +123,7 @@ function ApiKeysMobileList({
     <div className='min-w-0 space-y-3'>
       {rows.map((row) => {
         const apiKey = row.original
-        const statusConfig = API_KEY_STATUSES[apiKey.status]
-        const groupCell = row
-          .getAllCells()
-          .find((cell) => cell.column.id === 'group')
-        const expiryCell = row
-          .getAllCells()
-          .find((cell) => cell.column.id === 'expired_time')
+        const total = apiKey.used_quota + apiKey.remain_quota
 
         return (
           <div
@@ -158,14 +139,7 @@ function ApiKeysMobileList({
                   {apiKey.name}
                 </div>
               </div>
-              {statusConfig && (
-                <StatusBadge
-                  label={t(statusConfig.label)}
-                  variant={statusConfig.variant}
-                  copyable={false}
-                  className='shrink-0 px-0 text-xs font-normal'
-                />
-              )}
+              <ApiKeyStatusBadge apiKey={apiKey} />
             </div>
 
             <div className='flex min-w-0 items-center justify-between gap-2'>
@@ -175,38 +149,19 @@ function ApiKeysMobileList({
               <DataTableRowActions row={row} />
             </div>
 
-            <div className='min-w-0 space-y-3 py-1'>
-              <div className='min-w-0'>
-                {groupCell &&
-                  flexRender(
-                    groupCell.column.columnDef.cell,
-                    groupCell.getContext()
-                  )}
-              </div>
-              <ApiKeyQuotaCell apiKey={apiKey} now={now} variant='card' />
-            </div>
-
-            <div className='flex flex-wrap items-center gap-x-5 gap-y-1'>
-              <ModelLimitsCell apiKey={apiKey} detailsTrigger='click' />
-              <IpRestrictionsCell apiKey={apiKey} detailsTrigger='click' />
-            </div>
-
-            <div className='grid grid-cols-3 items-start gap-3 border-t pt-2'>
-              <div className='col-span-2 min-w-0'>
-                <ApiKeyActivityCell
-                  apiKey={apiKey}
-                  now={now}
-                  layout='columns'
-                />
-              </div>
-              <div className='min-w-0 space-y-1 [&_[data-slot=status-badge]]:text-xs [&_[data-slot=status-badge]]:font-normal'>
-                <div className='text-muted-foreground'>{t('Expires')}</div>
-                {expiryCell &&
-                  flexRender(
-                    expiryCell.column.columnDef.cell,
-                    expiryCell.getContext()
-                  )}
-              </div>
+            <div className='flex items-center justify-between gap-2 text-xs'>
+              <span className='text-muted-foreground'>{t('Quota')}</span>
+              {apiKey.unlimited_quota ? (
+                <span className='font-medium'>{t('Unlimited')}</span>
+              ) : (
+                <span className='font-medium tabular-nums'>
+                  {formatQuota(apiKey.remain_quota)}
+                  <span className='text-muted-foreground font-normal'>
+                    {' / '}
+                    {formatQuota(total)}
+                  </span>
+                </span>
+              )}
             </div>
           </div>
         )
@@ -218,16 +173,7 @@ function ApiKeysMobileList({
 export function ApiKeysTable() {
   const { t } = useTranslation()
   const { refreshTrigger } = useApiKeys()
-  const [now, setNow] = useState(() => Date.now())
-  const columns = useApiKeysColumns(now)
-
-  useEffect(() => {
-    const intervalId = window.setInterval(() => {
-      setNow(Date.now())
-    }, 30_000)
-
-    return () => window.clearInterval(intervalId)
-  }, [])
+  const columns = useApiKeysColumns()
 
   const {
     globalFilter,
