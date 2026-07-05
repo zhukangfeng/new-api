@@ -18,7 +18,14 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { Eye, EyeOff } from 'lucide-react'
-import { useState, useCallback, useMemo, lazy, Suspense } from 'react'
+import {
+  useState,
+  useCallback,
+  useMemo,
+  lazy,
+  Suspense,
+  useEffect,
+} from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
@@ -32,7 +39,6 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { ROLE } from '@/lib/roles'
-import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { ModelsChartPreferences } from './components/models/models-chart-preferences'
@@ -47,9 +53,9 @@ import {
   saveChartPreferences,
 } from './lib'
 import {
-  type DashboardSectionId,
   DASHBOARD_DEFAULT_SECTION,
   DASHBOARD_SECTION_IDS,
+  type DashboardSectionId,
 } from './section-registry'
 import type {
   DashboardChartPreferences,
@@ -59,23 +65,15 @@ import type {
 } from './types'
 
 const route = getRouteApi('/_authenticated/dashboard/$section')
-
-const LOG_STAT_CARD_FALLBACK_KEYS = [
-  'count',
+const LOG_STAT_CARD_PLACEHOLDERS = [
   'quota',
   'tokens',
-  'average-rpm',
-  'average-tpm',
-] as const
-const PERFORMANCE_METRIC_FALLBACK_KEYS = [
-  'success-rate',
-  'average-latency',
-  'throughput',
-] as const
-const PERFORMANCE_MODEL_FALLBACK_KEYS = [
-  'primary-model',
-  'secondary-model',
-] as const
+  'requests',
+  'users',
+  'models',
+]
+const PERFORMANCE_PLACEHOLDERS = ['latency', 'rpm', 'tpm']
+const PERFORMANCE_TAG_PLACEHOLDERS = ['cache', 'status']
 
 const LazyLogStatCards = lazy(() =>
   import('./components/models/log-stat-cards').then((m) => ({
@@ -113,25 +111,21 @@ const LazyFlowCharts = lazy(() =>
   }))
 )
 
+const LazyChannelAnalytics = lazy(() =>
+  import('./components/channels/channel-analytics').then((m) => ({
+    default: m.ChannelAnalytics,
+  }))
+)
+
 function LogStatCardsFallback() {
   return (
     <div className='overflow-hidden rounded-lg border'>
       <div className='divide-border/60 grid grid-cols-2 divide-x sm:grid-cols-3 lg:grid-cols-5'>
-        {LOG_STAT_CARD_FALLBACK_KEYS.map((key, index) => (
-          <div
-            key={key}
-            className={cn(
-              'px-2.5 py-1.5 sm:px-5 sm:py-4',
-              index === LOG_STAT_CARD_FALLBACK_KEYS.length - 1 &&
-                'col-span-2 sm:col-span-1'
-            )}
-          >
-            <div className='flex items-center gap-1.5 sm:gap-2'>
-              <Skeleton className='size-4 rounded-sm sm:size-7 sm:rounded-md' />
-              <Skeleton className='h-4 w-16' />
-            </div>
-            <Skeleton className='mt-1 h-5 w-16 sm:mt-2 sm:h-7 sm:w-20' />
-            <Skeleton className='mt-1 hidden h-3.5 w-28 md:block' />
+        {LOG_STAT_CARD_PLACEHOLDERS.map((placeholder) => (
+          <div key={placeholder} className='px-4 py-3.5 sm:px-5 sm:py-4'>
+            <Skeleton className='h-3.5 w-16' />
+            <Skeleton className='mt-2 h-7 w-20' />
+            <Skeleton className='mt-1.5 h-3.5 w-28' />
           </div>
         ))}
       </div>
@@ -160,15 +154,15 @@ function PerformanceOverviewFallback() {
         <div className='flex items-center gap-2'>
           <Skeleton className='h-4 w-24' />
         </div>
-        {PERFORMANCE_METRIC_FALLBACK_KEYS.map((key) => (
-          <div key={key} className='flex items-center gap-1.5'>
+        {PERFORMANCE_PLACEHOLDERS.map((placeholder) => (
+          <div key={placeholder} className='flex items-center gap-1.5'>
             <Skeleton className='h-3 w-14' />
             <Skeleton className='h-4 w-16' />
           </div>
         ))}
         <div className='ml-auto flex items-center gap-2'>
-          {PERFORMANCE_MODEL_FALLBACK_KEYS.map((key) => (
-            <Skeleton key={key} className='h-5 w-28 rounded-full' />
+          {PERFORMANCE_TAG_PLACEHOLDERS.map((placeholder) => (
+            <Skeleton key={placeholder} className='h-5 w-28 rounded-full' />
           ))}
         </div>
       </div>
@@ -188,6 +182,9 @@ const SECTION_META: Record<DashboardSectionId, { titleKey: string }> = {
   },
   users: {
     titleKey: 'User Analytics',
+  },
+  channels: {
+    titleKey: 'Channel Analytics',
   },
 }
 
@@ -248,10 +245,21 @@ export function Dashboard() {
   const visibleSections = useMemo(
     () =>
       DASHBOARD_SECTION_IDS.filter(
-        (section) => section !== 'overview' && (section !== 'users' || isAdmin)
+        (section) =>
+          section !== 'overview' &&
+          ((section !== 'users' && section !== 'channels') || isAdmin)
       ),
     [isAdmin]
   )
+
+  useEffect(() => {
+    if (userRole === undefined || isAdmin) return
+    if (activeSection !== 'users' && activeSection !== 'channels') return
+    void navigate({
+      to: '/dashboard/$section',
+      params: { section: 'models' },
+    })
+  }, [activeSection, isAdmin, navigate, userRole])
   const handleSectionChange = useCallback(
     (section: string) => {
       void navigate({
@@ -397,6 +405,13 @@ export function Dashboard() {
                   filters={userChartsFilters}
                   onFiltersChange={setUserChartsFilters}
                 />
+              </Suspense>
+            </FadeIn>
+          )}
+          {activeSection === 'channels' && isAdmin && (
+            <FadeIn>
+              <Suspense fallback={<ModelChartsFallback />}>
+                <LazyChannelAnalytics />
               </Suspense>
             </FadeIn>
           )}
