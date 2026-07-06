@@ -20,7 +20,6 @@ import { formatCurrencyFromUSD } from '@/lib/currency'
 
 import { QUOTA_TYPE_VALUES, TOKEN_UNIT_DIVISORS } from '../constants'
 import type { PricingModel, TokenUnit, PriceType } from '../types'
-import { getConfiguredGroupRatio, getDisplayGroupRatio } from './model-helpers'
 
 // ----------------------------------------------------------------------------
 // Price Calculation Utilities
@@ -52,6 +51,38 @@ export function stripTrailingZeros(formatted: string): string {
   }
 
   return `${symbol}${result}${suffix}`
+}
+
+/**
+ * Find minimum group ratio from enabled groups
+ */
+function getMinGroupRatio(
+  enableGroups: string[],
+  groupRatio: Record<string, number>
+): number {
+  if (enableGroups.length === 0) return 1
+
+  let minRatio = Number.POSITIVE_INFINITY
+
+  for (const group of enableGroups) {
+    const ratio = groupRatio[group]
+    if (ratio !== undefined && ratio < minRatio) {
+      minRatio = ratio
+    }
+  }
+
+  return minRatio === Number.POSITIVE_INFINITY ? 1 : minRatio
+}
+
+function getDisplayGroupRatio(
+  enableGroups: string[],
+  groupRatio: Record<string, number>,
+  selectedGroup?: string
+): number {
+  if (selectedGroup && enableGroups.includes(selectedGroup)) {
+    return groupRatio[selectedGroup] ?? 1
+  }
+  return getMinGroupRatio(enableGroups, groupRatio)
 }
 
 /**
@@ -148,15 +179,20 @@ export function formatPrice(
   showWithRecharge = false,
   priceRate = 1,
   usdExchangeRate = 1,
-  selectedGroup?: string
+  selectedGroup?: string,
+  displayGroupRatio?: Record<string, number>
 ): string {
   if (model.quota_type === QUOTA_TYPE_VALUES.REQUEST) {
     return '-'
   }
 
-  const displayGroupRatio = getDisplayGroupRatio(model, selectedGroup)
+  const enableGroups = Array.isArray(model.enable_groups)
+    ? model.enable_groups
+    : []
+  const groupRatio = displayGroupRatio ?? model.group_ratio ?? {}
+  const ratio = getDisplayGroupRatio(enableGroups, groupRatio, selectedGroup)
 
-  let priceInUSD = calculateTokenPrice(model, type, displayGroupRatio)
+  let priceInUSD = calculateTokenPrice(model, type, ratio)
   priceInUSD = applyRechargeRate(
     priceInUSD,
     showWithRecharge,
@@ -189,7 +225,7 @@ export function formatGroupPrice(
     return '-'
   }
 
-  const ratio = getConfiguredGroupRatio(groupRatio, group)
+  const ratio = groupRatio[group] || 1
   let priceInUSD = calculateTokenPrice(model, type, ratio)
 
   priceInUSD = applyRechargeRate(
@@ -222,7 +258,7 @@ export function formatFixedPrice(
     return '-'
   }
 
-  const ratio = getConfiguredGroupRatio(groupRatio, group)
+  const ratio = groupRatio[group] || 1
   let priceInUSD = (model.model_price || 0) * ratio
 
   priceInUSD = applyRechargeRate(
@@ -247,15 +283,20 @@ export function formatRequestPrice(
   showWithRecharge = false,
   priceRate = 1,
   usdExchangeRate = 1,
-  selectedGroup?: string
+  selectedGroup?: string,
+  displayGroupRatio?: Record<string, number>
 ): string {
   if (model.quota_type !== QUOTA_TYPE_VALUES.REQUEST) {
     return '-'
   }
 
-  const displayGroupRatio = getDisplayGroupRatio(model, selectedGroup)
+  const enableGroups = Array.isArray(model.enable_groups)
+    ? model.enable_groups
+    : []
+  const groupRatio = displayGroupRatio ?? model.group_ratio ?? {}
+  const ratio = getDisplayGroupRatio(enableGroups, groupRatio, selectedGroup)
 
-  let priceInUSD = (model.model_price || 0) * displayGroupRatio
+  let priceInUSD = (model.model_price || 0) * ratio
 
   priceInUSD = applyRechargeRate(
     priceInUSD,
