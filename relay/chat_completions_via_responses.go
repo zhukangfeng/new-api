@@ -1,20 +1,20 @@
 package relay
 
 import (
-	"fmt"
+	"bufio"
 	"io"
 	"net/http"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/relay/channel"
 	openaichannel "github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
-	"github.com/QuantumNous/new-api/relaykit/dto"
-	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
 )
@@ -100,16 +100,16 @@ func textRequestViaResponses(c *gin.Context, info *relaycommon.RelayInfo, adapto
 		request = &overriddenChatReq
 	}
 
-	result, err := service.ConvertRequest(c, info, types.RelayFormatOpenAIResponses, request)
+	var overriddenChatReq dto.GeneralOpenAIRequest
+	if err := common.Unmarshal(chatJSON, &overriddenChatReq); err != nil {
+		return nil, types.NewError(err, types.ErrorCodeChannelParamOverrideInvalid, types.ErrOptionWithSkipRetry())
+	}
+
+	responsesReq, err := service.ChatCompletionsRequestToResponsesRequest(&overriddenChatReq)
 	if err != nil {
 		return nil, types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 	}
-	responsesReq, ok := result.Value.(*dto.OpenAIResponsesRequest)
-	if !ok {
-		return nil, types.NewError(fmt.Errorf("expected OpenAI responses request, got %T", result.Value), types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
-	}
-	return relayResponsesRequest(c, info, adaptor, responsesReq, paramOverrideApplied)
-}
+	info.AppendRequestConversion(types.RelayFormatOpenAIResponses)
 
 func relayResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, adaptor channel.Adaptor, responsesReq *dto.OpenAIResponsesRequest, paramOverrideApplied bool) (*dto.Usage, *types.NewAPIError) {
 	savedRelayMode := info.RelayMode
@@ -165,7 +165,7 @@ func relayResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, adaptor 
 
 	httpResp = resp.(*http.Response)
 	clientStream := info.IsStream
-	upstreamStream := isResponsesEventStreamContentType(httpResp.Header.Get("Content-Type"))
+	upstreamStream := detectResponsesEventStream(httpResp)
 	info.IsStream = clientStream || upstreamStream
 	if httpResp.StatusCode != http.StatusOK {
 		newApiErr := service.RelayErrorHandler(c.Request.Context(), httpResp, false)
@@ -201,4 +201,32 @@ func relayResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, adaptor 
 
 func isResponsesEventStreamContentType(contentType string) bool {
 	return strings.Contains(strings.ToLower(contentType), "text/event-stream")
+}
+
+func detectResponsesEventStream(resp *http.Response) bool {
+	if resp == nil {
+		return false
+	}
+	if isResponsesEventStreamContentType(resp.Header.Get("Content-Type")) {
+		return true
+	}
+	if resp.Body == nil {
+		return false
+	}
+
+	reader := bufio.NewReader(resp.Body)
+	peeked, err := reader.Peek(len("event:"))
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{
+		Reader: reader,
+		Closer: resp.Body,
+	}
+	if err != nil && len(peeked) == 0 {
+		return false
+	}
+
+	prefix := strings.TrimLeft(string(peeked), "\ufeff \t\r\n")
+	return strings.HasPrefix(prefix, "event:") || strings.HasPrefix(prefix, "data:")
 }
