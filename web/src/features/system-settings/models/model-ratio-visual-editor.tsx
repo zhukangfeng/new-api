@@ -244,8 +244,8 @@ const ModelRatioVisualEditorComponent = forwardRef<
       .map((name) => {
         const saved = savedByName.get(name)
         const draft = draftByName.get(name)
-        const displayed = saved ??
-          draft ?? { name, billingMode: 'per-token', hasConflict: false }
+        const displayed = saved ?? draft
+        if (!displayed) return []
         const savedSignature = getSnapshotSignature(saved)
         const draftSignature = getSnapshotSignature(draft)
 
